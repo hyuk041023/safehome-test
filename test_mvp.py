@@ -80,6 +80,26 @@ def test_filter_and_sentence(rows):
     assert len(hits) >= 3, "시연 문장으로 최소 3건은 나와야 함"
 
 
+def test_market(rows, db):
+    """실거래 시세 파일이 있으면: 100건, 모든 매물이 비교 가능, 낮음·비슷·높음이 모두 나와야 함."""
+    from collections import Counter
+    real = rc.load_market_csv(Path(db_seed.__file__).with_name("market_prices.csv"))
+    con = sqlite3.connect(db)
+    market = {(d, k): (m, n) for d, k, m, n in con.execute(
+        "SELECT dong, kind, median_monthly, sample_n FROM market_prices")}
+    labels = Counter(rc.market_compare(r, market)["label"] for r in rows)
+    kinds = Counter(r["kind"] for r in rows)
+    print(f"\n[5] 매물 {len(rows)}건, 유형 {dict(kinds)}, 시세 비교 {dict(labels)}")
+    assert len(rows) == 100
+    if real:
+        assert labels["비교 불가"] == 0, "실거래 기준이 있으면 모두 비교 가능해야 함"
+        assert labels["낮음"] >= 5 and labels["높음"] >= 5 and labels["비슷"] >= 40
+        ge = next(r for r in rows if r["dong"] == "개신동" and r["kind"] == "오피스텔")
+        detail = rc.market_compare(ge, market)["detail"]
+        print("    개신동 오피스텔(거래 1건) →", detail)
+        assert rc.AREA_NAME in detail
+
+
 if __name__ == "__main__":
     db = Path(tempfile.mkdtemp()) / "test.db"
     db_seed.build(db)
@@ -88,4 +108,5 @@ if __name__ == "__main__":
     test_missing_info()
     test_weights()
     test_filter_and_sentence(rows)
+    test_market(rows, db)
     print("\n모든 테스트 통과 ✅")

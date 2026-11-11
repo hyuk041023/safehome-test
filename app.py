@@ -2,7 +2,8 @@
 
 실행: streamlit run app.py
 화면: ① 집 찾기  ② 추천 결과  ③ 계약 점검
-데이터: safehome.db (가상 매물 · 텍스트 가상 계약서/등기 · 샘플 시세). 없으면 자동 생성.
+데이터: safehome.db (가상 매물 100건 · 텍스트 가상 계약서/등기) + market_prices.csv (국토부 실거래가 중위값).
+       DB가 없으면 자동 생성.
 """
 from pathlib import Path
 
@@ -40,6 +41,9 @@ def load_data():
 
 rows, contracts, registries, market = load_data()
 by_id = {r["id"]: r for r in rows}
+_real = rc.load_market_csv(Path(__file__).with_name("market_prices.csv"))
+MARKET_SOURCE = (_real[1] if _real and _real[1] else "국토교통부 실거래가") if _real else "샘플 시세"
+MARKET_TAG = "국토부 실거래가" if _real else "샘플 시세"
 
 # ── 입력 상태 기본값 ──────────────────────────────────────────
 DEFAULTS = dict(f_rent=45, f_dep="상관없음", f_gate="정문", f_walk=15,
@@ -116,6 +120,7 @@ with st.sidebar:
                  use_container_width=True)
     st.markdown(f"- 보증금 환산율 {rc.CONVERSION_RATE:.0%} (가정값)\n"
                 f"- 시세 ±{rc.MARKET_BAND:.0%} 이내면 '비슷'\n"
+                f"- 시세 출처: {MARKET_SOURCE}. 거래 {rc.MIN_SAMPLES}건 미만인 동은 {rc.AREA_NAME} 전체 기준\n"
                 f"- 보증금 회수 위험 비율 {cc.RATIO_CAUTION:.0%} 주의 · {cc.RATIO_RISK:.0%} 위험")
     st.caption("판정은 모두 규칙으로 계산해요. 같은 입력이면 항상 같은 결과가 나와요.")
 
@@ -183,7 +188,7 @@ with tab2:
                       help="월세 + 관리비")
             m1.caption(f"월세 {r['rent'] // 10_000}만 + 관리비 {r['maint'] // 10_000}만 · 보증금 {r['deposit'] // 10_000:,}만")
             m2.metric("주변 시세 대비", mk["label"])
-            m2.caption(mk["detail"] + " · 샘플 시세")
+            m2.caption(mk["detail"] + f" · {MARKET_TAG}")
             badge = []
             if flags[cc.RISK]:
                 badge.append(f"🔴 위험 {flags[cc.RISK]}")
@@ -195,7 +200,7 @@ with tab2:
             m3.caption(" · ".join(badge) if badge else "🟢 큰 위험 신호 없음 (참고용)")
             st.markdown("**추천 이유** · " + " / ".join(reasons))
             if weak:
-                st.markdown("**아쉬운 점** · " + " / ".join(weak))
+                st.markdown("**다른 후보보다 아쉬운 점** · " + " / ".join(weak))
             with st.expander("점수 내역 보기"):
                 st.dataframe([{"항목": f, "가중치": round(weights[f], 3), "점수": round(item["parts"][f], 3)}
                               for f in rc.FACTORS if weights[f] > 0], hide_index=True, use_container_width=True)

@@ -165,12 +165,51 @@ def explain(item, weights, gate):
     return reasons or ["조건을 모두 만족하는 매물이에요."], weak
 
 
+MIN_SAMPLES = 3
+AREA_NAME = "서원구"
+
+
+def load_market_csv(path):
+    """fetch_market.py가 만든 market_prices.csv(국토부 실거래가 중위값)를 읽는다.
+    반환: ({(dong, kind): (median, n)}, 출처 문구). 같은 유형의 구 전체 값(가중 평균)을
+    (AREA_NAME, kind) 키로 함께 넣어, 거래가 적은 동의 대체 기준으로 쓴다. 파일이 없으면 None."""
+    import csv
+    from pathlib import Path
+    p = Path(path)
+    if not p.exists():
+        return None
+    market, source, pooled = {}, None, {}
+    with open(p, encoding="utf-8-sig", newline="") as f:
+        for r in csv.DictReader(f):
+            med, n = int(float(r["median_monthly"])), int(r["sample_n"])
+            market[(r["dong"], r["kind"])] = (med, n)
+            source = source or r.get("source")
+            s = pooled.setdefault(r["kind"], [0, 0])
+            s[0] += med * n
+            s[1] += n
+    for kind, (total, n) in pooled.items():
+        if n:
+            market[(AREA_NAME, kind)] = (int(total / n), n)
+    return market, source
+
+
+def reference_price(market, dong, kind):
+    """비교 기준 시세: 같은 동·유형 거래가 충분하면 그 값, 아니면 구 전체 같은 유형 값."""
+    m = market.get((dong, kind))
+    if m and m[1] >= MIN_SAMPLES:
+        return m[0], m[1], dong
+    m = market.get((AREA_NAME, kind))
+    if m and m[1] >= MIN_SAMPLES:
+        return m[0], m[1], f"{AREA_NAME} 전체"
+    return None
+
+
 def market_compare(row, market):
-    """동·유형별 샘플 시세와 비교. market: {(dong, kind): (median, n)}."""
-    m = market.get((row["dong"], row["kind"]))
-    if not m or m[1] < 3:
+    """동·유형별 시세와 비교. market: {(dong, kind): (median, n)}."""
+    ref = reference_price(market, row["dong"], row["kind"])
+    if not ref:
         return dict(label="비교 불가", detail="비교할 거래 수가 부족해요.", diff=None)
-    median_v, n = m
+    median_v, n, scope = ref
     diff = converted_monthly(row) / median_v - 1
     if abs(diff) <= MARKET_BAND:
         label = "비슷"
@@ -179,4 +218,6 @@ def market_compare(row, market):
     else:
         label = "낮음"
     return dict(label=label, diff=diff,
-                detail=f"환산 월 {converted_monthly(row) / 10_000:.1f}만 원 vs 주변 중위 {median_v / 10_000:.1f}만 원 ({n}건, {diff:+.0%})")
+                detail=f"환산 월 {converted_monthly(row) / 10_000:.1f}만 원 vs {scope} {row['kind']} "
+                       f"{'중위' if scope == row['dong'] else '평균(동별 중위값 가중)'} "
+                       f"{median_v / 10_000:.1f}만 원 ({n}건, {diff:+.0%})")

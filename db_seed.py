@@ -1,11 +1,16 @@
 """가상 데이터로 SQLite DB(safehome.db)를 만든다.
 
-- listings      : 충북대 주변 가상 매물 40건
+- listings      : 충북대 주변 가상 매물 100건 (동마다 25건)
 - contracts     : 매물별 가상 계약서 (텍스트 원문 그대로 저장)
 - registries    : 매물별 가상 등기사항 요약 (텍스트 원문 그대로 저장)
-- market_prices : 동·유형별 샘플 시세 (국토부 실거래가 API 연결 전 임시값)
+- market_prices : 동·유형별 시세. market_prices.csv(국토부 실거래가)가 있으면 그 값,
+                  없으면 가상 매물로 만든 샘플값
 
-모든 이름·주소·금액은 가상입니다. 실제 개인정보는 넣지 않습니다.
+매물 가격은 실제 실거래 중위값을 기준으로 만든다. 약 70%는 시세와 비슷하게,
+15%는 일부러 싸게(-15~-25%), 15%는 비싸게(+15~+30%) 만들어 시연에서
+"낮음·비슷·높음"이 모두 나오게 한다.
+
+모든 이름·주소·금액은 가상입니다(시세만 실제 공공데이터). 실제 개인정보는 넣지 않습니다.
 실행: python db_seed.py
 """
 import random
@@ -13,6 +18,12 @@ from datetime import date, timedelta
 from pathlib import Path
 
 DB_PATH = Path(__file__).with_name("safehome.db")
+MARKET_CSV = Path(__file__).with_name("market_prices.csv")
+PER_DONG = 25
+KIND_WEIGHTS = [("원룸", 0.6), ("투룸", 0.25), ("오피스텔", 0.15)]
+CONVERSION_RATE = 0.05  # recommend.CONVERSION_RATE와 같아야 함
+# 실거래 파일이 없을 때 쓰는 기본 중위값(환산 월, 원)
+DEFAULT_MEDIAN = {"원룸": 320_000, "투룸": 400_000, "오피스텔": 450_000}
 WRITTEN_DATE = date(2026, 11, 20)  # 가상 계약서 작성일 (모든 사례 공통)
 
 # 동별 정문·중문·후문 도보 시간 범위(분) — 가상 값
@@ -90,31 +101,60 @@ def won(n: int) -> str:
     return f"금 {n:,}원"
 
 
-def make_listings(rng: random.Random):
+def load_real_market():
+    """market_prices.csv가 있으면 {(dong, kind): (median, n)}과 출처를 돌려준다."""
+    import recommend
+    return recommend.load_market_csv(MARKET_CSV)
+
+
+def base_median(market, dong, kind):
+    import recommend
+    if market:
+        ref = recommend.reference_price(market, dong, kind)
+        if ref:
+            return ref[0]
+    return DEFAULT_MEDIAN[kind]
+
+
+def pick_kind(rng):
+    r, acc = rng.random(), 0.0
+    for kind, w in KIND_WEIGHTS:
+        acc += w
+        if r < acc:
+            return kind
+    return KIND_WEIGHTS[-1][0]
+
+
+def make_listings(rng: random.Random, market=None):
     rows, case_keys, idx = [], list(CASES), 0
     for dong, gates in DONGS.items():
-        for k in range(10):
+        for k in range(PER_DONG):
             idx += 1
-            r = rng.random()
-            kind = "원룸" if r < 0.7 else ("투룸" if r < 0.85 else "오피스텔")
-            rent = rng.randrange(28, 52) * 10_000
-            deposit = rng.choice([300, 500, 500, 1000]) * 10_000
-            maint = rng.randrange(3, 9) * 10_000
-            area = round(rng.uniform(16, 28), 1)
-            value = rng.randrange(60, 120) * 10_000_000  # 다가구 건물 전체 추정 시세
-            if kind == "투룸":
-                rent += 100_000
-                area = round(rng.uniform(33, 45), 1)
-            elif kind == "오피스텔":
-                rent += 50_000
-                deposit = rng.choice([1000, 1500, 2000]) * 10_000
-                maint += 40_000
+            kind = pick_kind(rng)
+            band = rng.random()
+            if band < 0.15:
+                factor = rng.uniform(0.75, 0.85)   # 일부러 싸게 → "낮음"
+            elif band > 0.85:
+                factor = rng.uniform(1.15, 1.30)   # 일부러 비싸게 → "높음"
+            else:
+                factor = rng.uniform(0.93, 1.07)   # 시세와 비슷
+            target = base_median(market, dong, kind) * factor
+            if kind == "오피스텔":
+                deposit = rng.choice([300, 500, 1000, 1000]) * 10_000
+                maint = rng.randrange(8, 14) * 10_000
+                area = round(rng.uniform(17, 28), 1)
                 value = rng.randrange(12, 20) * 10_000_000  # 오피스텔 호실 추정 시세
+            else:
+                deposit = rng.choice([200, 300, 300, 500, 1000]) * 10_000
+                maint = rng.randrange(4, 9) * 10_000 + (10_000 if kind == "투룸" else 0)
+                area = round(rng.uniform(16, 28), 1) if kind == "원룸" else round(rng.uniform(33, 45), 1)
+                value = rng.randrange(60, 120) * 10_000_000  # 다가구 건물 전체 추정 시세
+            rent = max(150_000, round((target - deposit * CONVERSION_RATE / 12) / 10_000) * 10_000)
             opts = [o for o in OPTIONS if rng.random() < 0.6]
             if kind == "오피스텔":
                 opts = sorted(set(opts) | {"세탁기", "냉장고", "에어컨"}, key=OPTIONS.index)
             rows.append(dict(
-                id=idx, name=f"{dong} 가상 {kind} {k + 1}호", dong=dong, kind=kind,
+                id=idx, name=f"{dong} 가상 {kind} {idx}호", dong=dong, kind=kind,
                 address=f"충북 청주시 서원구 {dong} 가상로 {rng.randrange(1, 90)}, {rng.randrange(1, 4)}0{rng.randrange(1, 6)}호",
                 deposit=deposit, rent=rent, maint=maint, area=area,
                 light=rng.randint(1, 5), quiet=rng.randint(1, 5),
@@ -190,32 +230,38 @@ def render_registry(l: dict) -> str:
     return "\n".join(lines)
 
 
-def make_market(listings):
-    """동·유형별 샘플 시세: 가상 매물 환산 월세의 중위값에 약간의 변동을 준 값.
-    실거래가 API를 연결하면 이 표를 실제 중위값으로 교체한다."""
+def make_market(listings, real=None):
+    """시세 표. 실거래 파일이 있으면 그 값을 그대로 쓰고(구 전체 대체값 포함),
+    없으면 가상 매물 환산 월세의 중위값으로 만든 샘플값을 쓴다."""
+    if real:
+        market, source = real
+        return [dict(dong=d, kind=k, median_monthly=v[0], sample_n=v[1], source=source or "국토교통부 실거래가")
+                for (d, k), v in market.items()]
     from statistics import median
     groups = {}
     for l in listings:
-        groups.setdefault((l["dong"], l["kind"]), []).append(l["rent"] + l["deposit"] * 0.05 / 12)
-    return [dict(dong=d, kind=k, median_monthly=int(median(v) * 1.03), sample_n=len(v))
-            for (d, k), v in groups.items()]
+        groups.setdefault((l["dong"], l["kind"]), []).append(l["rent"] + l["deposit"] * CONVERSION_RATE / 12)
+    return [dict(dong=d, kind=k, median_monthly=int(median(v) * 1.03), sample_n=len(v),
+                 source="샘플 시세(실거래가 파일 없음)") for (d, k), v in groups.items()]
 
 
 def build_memory(seed: int = 45):
     """DB 없이 같은 데이터를 메모리에서 만든다 (sqlite3가 없는 브라우저 환경용)."""
-    listings = make_listings(random.Random(seed))
+    real = load_real_market()
+    listings = make_listings(random.Random(seed), real[0] if real else None)
     rows = [{**{k: v for k, v in l.items() if k not in ("value", "case", "lessor")}, "case_id": l["case"]}
             for l in listings]
     contracts = {l["id"]: render_contract(l) for l in listings}
     registries = {l["id"]: render_registry(l) for l in listings}
-    market = {(m["dong"], m["kind"]): (m["median_monthly"], m["sample_n"]) for m in make_market(listings)}
+    market = {(m["dong"], m["kind"]): (m["median_monthly"], m["sample_n"]) for m in make_market(listings, real)}
     return rows, contracts, registries, market
 
 
 def build(db_path: Path = DB_PATH, seed: int = 45) -> Path:
     import sqlite3
     rng = random.Random(seed)
-    listings = make_listings(rng)
+    real = load_real_market()
+    listings = make_listings(rng, real[0] if real else None)
     if db_path.exists():
         db_path.unlink()
     con = sqlite3.connect(db_path)
@@ -251,9 +297,9 @@ def build(db_path: Path = DB_PATH, seed: int = 45) -> Path:
         cur.execute("INSERT INTO registries VALUES (?,?)", (l["id"], render_registry(l)))
     for k, c in CASES.items():
         cur.execute("INSERT INTO cases VALUES (?,?,?)", (k, c["title"], c["expected"]))
-    for m in make_market(listings):
+    for m in make_market(listings, real):
         cur.execute("INSERT INTO market_prices VALUES (?,?,?,?,?)",
-                    (m["dong"], m["kind"], m["median_monthly"], m["sample_n"], "샘플 시세(실거래가 API 연결 전)"))
+                    (m["dong"], m["kind"], m["median_monthly"], m["sample_n"], m["source"]))
     con.commit()
     con.close()
     return db_path

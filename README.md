@@ -1,9 +1,41 @@
-# Safe Home MVP (규칙 기반 · AI 없음)
+# Safe Home MVP (규칙 기반 + 문장 해석만 Gemini)
 
 충북대 근처 자취방을 추천하고, 계약 전에 위험 신호를 점검하는 시연용 MVP예요.
-노션의 **MVP 설계 (초안)**, **11/10 설문 가중치**, **11/11 회의 제안(예시 계약서 불러오기)**을 바탕으로 만들었어요.
+노션의 **MVP 설계 (초안)**, **11/10 설문 가중치**, **11/11 회의 제안(예시 계약서 불러오기)**, **11/12 회의 결정(Gemini 연결 방식)**을 바탕으로 만들었어요.
 
 > 매물·계약서·등기는 **가상 샘플 데이터**이고, **시세만 국토교통부 전월세 실거래가(실제 공공데이터)**예요. 실제 개인정보는 없어요.
+
+## AI(Gemini) 연결 — 11/12 회의 결정
+
+```
+현재:  사용자 문장 → [🤖 AI로 조건 분석] → /api/parse (Vercel 서버리스 함수) → Gemini → 조건 JSON
+                                                                         ↓ 실패하면 규칙 해석으로 대신
+       입력칸 확인·수정 → [🔎 매물 검색] → SQLite 데이터 검색 → 설문 가중치 점수 → 결과   (Gemini 0회)
+```
+
+- **버튼 분리**: 「AI로 조건 분석」은 Gemini를 1번 불러 입력칸만 채워요. 「매물 검색」은 지금 입력칸 값으로만 검색하고 AI를 부르지 않아요.
+- **키 위치**: Gemini 키는 브라우저 코드에 없고, Vercel 서버리스 함수(`api/parse.js`)의 환경 변수에만 있어요.
+- **AI 역할은 문장 해석뿐**: 검색·점수·시세 비교·계약 점검은 모두 규칙이에요. AI 답도 허용된 값(정문/중문/후문, 원룸/투룸/오피스텔, 옵션 6종 등)과 숫자 범위만 받아요.
+- **실패하면 규칙으로**: 키가 없거나, 한도 초과, 응답 지연(15초), 오류가 나면 안내 문구를 띄우고 규칙 해석으로 채워요. 시연이 멈추지 않아요.
+
+### 키 등록 (팀원이 한 번)
+
+1. [Google AI Studio](https://aistudio.google.com/)에서 API 키 발급 (키는 채팅·노션·GitHub에 붙여 넣지 않아요)
+2. Vercel 프로젝트 → **Settings → Environment Variables** → `GEMINI_API_KEY` 추가 (Production·Preview 체크)
+3. **Deployments**에서 최신 배포를 **Redeploy** (환경 변수는 다시 배포해야 반영돼요)
+
+### 호출 횟수 제한
+
+| 위치 | 기본값 | 바꾸는 법 |
+| --- | --- | --- |
+| 입력 길이 | 200자 | `api/parse.js`의 `MAX_CHARS` |
+| 한 사용자(IP) 분당 | 5번 | 환경 변수 `LIMIT_PER_MINUTE` |
+| 한 사용자(IP) 하루 | 30번 | 환경 변수 `LIMIT_PER_DAY_IP` |
+| 서비스 전체 하루 | 200번 | 환경 변수 `LIMIT_PER_DAY_TOTAL` |
+| 화면 한 번 접속당 | 10번 | `ai_parse.py`의 `SESSION_LIMIT` |
+
+- AI Studio → **Dashboard → Rate Limit**에서 `gemini-2.5-flash`의 **RPM·RPD·TPM**을 확인하고, `LIMIT_PER_DAY_TOTAL`을 **RPD보다 작게** 잡아 주세요.
+- 서버 쪽 제한은 함수 메모리에 저장하는 최소한의 방어예요. Vercel이 함수를 새로 띄우면 숫자가 초기화될 수 있어요. 마지막 안전장치는 Google 할당량이고, 넘으면 규칙 해석으로 대신해요.
 
 ## 실거래 시세 갱신
 
@@ -20,17 +52,17 @@ python fetch_market.py   # 인증키를 물어봐요(화면에 안 보임). 키�
 ```bash
 pip install -r requirements.txt
 streamlit run app.py        # safehome.db가 없으면 자동으로 만들어요
-python test_mvp.py          # 규칙 검증 테스트
+python test_mvp.py          # 규칙 검증 테스트 (Gemini는 흉내만 내서 키 없이 돌아가요)
 python db_seed.py           # DB를 처음부터 다시 만들 때
 ```
 
-Streamlit Cloud에 올릴 때는 이 폴더를 그대로 GitHub 저장소에 넣고 `app.py`를 진입 파일로 지정하면 돼요.
+로컬에서 AI 분석까지 쓰려면 `SAFEHOME_API_URL=https://(배포 주소)/api/parse`를 환경 변수로 주고 실행해요. 없으면 규칙 해석만 써요.
 
 ## 화면 3개 (시연 5장면)
 
 | 화면 | 하는 일 |
 | --- | --- |
-| ① 집 찾기 | 문장 입력 → **규칙으로 해석**해 입력칸 자동 채우기 → 사용자가 확인·수정 |
+| ① 집 찾기 | 문장 입력 → 「AI로 조건 분석」(Gemini, 실패 시 규칙)으로 입력칸 자동 채우기 → 사용자가 확인·수정 → 「매물 검색」 |
 | ② 추천 결과 | 적용된 조건 태그, 필수 조건 필터, 설문 가중치 정렬, 진짜 한 달 비용, 샘플 시세 비교, **계약 전 확인할 것 배지**, 점수 내역 |
 | ③ 계약 점검 | DB의 **텍스트 가상 계약서·등기**를 불러와 표시(수정 가능) → 8개 항목 점검 → 근거 문구 → 물어볼 질문 → 문자 초안 |
 
@@ -39,7 +71,9 @@ Streamlit Cloud에 올릴 때는 이 폴더를 그대로 GitHub 저장소에 넣
 | 파일 | 내용 |
 | --- | --- |
 | `app.py` | Streamlit 화면 |
-| `recommend.py` | 문장 해석(정규식), 필터, 설문 가중치·ROC 혼합, 점수, 시세 비교 |
+| `recommend.py` | 문장 해석(정규식), AI 답 검사(`cond_from_ai`), 필터, 설문 가중치·ROC 혼합, 점수, 시세 비교 |
+| `ai_parse.py` | 브라우저에서 `/api/parse` 부르기, 실패 시 안내 |
+| `api/parse.js` | Vercel 서버리스 함수: Gemini 호출, 입력 길이·횟수 제한, 오류 처리 (키는 환경 변수) |
 | `contract_check.py` | 텍스트 계약서·등기 읽기, 8개 항목 규칙, 특약 키워드 분류, 질문·문자 초안 |
 | `db_seed.py` | SQLite DB 생성 (매물 100건, 계약 사례 10종) |
 | `fetch_market.py` | 국토부 실거래가 수집 → `market_prices.csv` |
@@ -91,5 +125,7 @@ Streamlit Cloud에 올릴 때는 이 폴더를 그대로 GitHub 저장소에 넣
 - [ ] 특약 키워드 규칙 보강 (실제 위험 특약 문구 조사)
 - [x] 국토부 전월세 실거래가 연결 (11/11 수집, `market_prices.csv`)
 - [ ] 연립다세대(빌라) 전월세도 추가할지 검토
-- [ ] 문장 해석을 Gemini로 바꿀 경우 `recommend.parse_sentence`만 교체하면 돼요 (반환 형식 동일하게)
+- [x] 문장 해석에 Gemini 연결 (11/12, `/api/parse` 서버리스 함수)
+- [ ] Vercel에 `GEMINI_API_KEY` 등록 후 Redeploy
+- [ ] AI Studio에서 RPM·RPD·TPM 확인 → `LIMIT_PER_DAY_TOTAL` 조정
 - [ ] 발표·영상에 "샘플 데이터" 표시

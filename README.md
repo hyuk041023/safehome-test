@@ -34,7 +34,9 @@
 | 서비스 전체 하루 | 200번 | 환경 변수 `LIMIT_PER_DAY_TOTAL` |
 | 화면 한 번 접속당 | 10번 | `ai_parse.py`의 `SESSION_LIMIT` |
 
-- AI Studio → **Dashboard → Rate Limit**에서 `gemini-2.5-flash`의 **RPM·RPD·TPM**을 확인하고, `LIMIT_PER_DAY_TOTAL`을 **RPD보다 작게** 잡아 주세요.
+- 모델은 `gemini-3.5-flash-lite`예요 (`gemini-2.5-flash`는 새 계정에서 404). 바꾸려면 환경 변수 `GEMINI_MODEL`.
+- 무료 등급 한도(11/12 AI Studio 확인): **RPM 15 · TPM 25만 · RPD 500**. 전체 하루 200번이 RPD보다 작아서 그대로 둬요. 한도가 바뀌면 AI Studio → **Dashboard → Rate Limit**에서 다시 확인하고 `LIMIT_PER_DAY_TOTAL`을 **RPD보다 작게** 잡아 주세요.
+- 동시에 여러 명이 누르면 분당 15번(RPM)에 먼저 걸릴 수 있어요. 그때는 Gemini가 429를 주고 화면은 규칙 해석으로 대신해요.
 - 서버 쪽 제한은 함수 메모리에 저장하는 최소한의 방어예요. Vercel이 함수를 새로 띄우면 숫자가 초기화될 수 있어요. 마지막 안전장치는 Google 할당량이고, 넘으면 규칙 해석으로 대신해요.
 
 ## 실거래 시세 갱신
@@ -126,6 +128,6 @@ python db_seed.py           # DB를 처음부터 다시 만들 때
 - [x] 국토부 전월세 실거래가 연결 (11/11 수집, `market_prices.csv`)
 - [ ] 연립다세대(빌라) 전월세도 추가할지 검토
 - [x] 문장 해석에 Gemini 연결 (11/12, `/api/parse` 서버리스 함수)
-- [ ] Vercel에 `GEMINI_API_KEY` 등록 후 Redeploy
-- [ ] AI Studio에서 RPM·RPD·TPM 확인 → `LIMIT_PER_DAY_TOTAL` 조정
+- [x] Vercel에 `GEMINI_API_KEY` 등록 후 Redeploy (11/12)
+- [x] AI Studio에서 RPM·RPD·TPM 확인 (RPD 500 → 전체 하루 200 유지)
 - [ ] 발표·영상에 "샘플 데이터" 표시

@@ -10,7 +10,7 @@
 //
 // 환경 변수 (Vercel → Settings → Environment Variables)
 //   GEMINI_API_KEY        필수. Google AI Studio에서 발급
-//   GEMINI_MODEL          선택. 기본 gemini-2.5-flash
+//   GEMINI_MODEL          선택. 기본 gemini-3.5-flash-lite (2.5 계열은 새 계정에서 404)
 //   LIMIT_PER_MINUTE      선택. 한 사용자(IP) 분당 최대 호출. 기본 5
 //   LIMIT_PER_DAY_IP      선택. 한 사용자(IP) 하루 최대 호출. 기본 30
 //   LIMIT_PER_DAY_TOTAL   선택. 전체 하루 최대 호출. 기본 200
@@ -20,7 +20,7 @@
 // 새로 띄우면 숫자가 초기화될 수 있어요. 정확한 제한이 필요하면 Upstash Redis 같은 저장소를 붙여요.
 // 최종 안전장치는 Google 쪽 할당량이라, 한도를 넘으면 Gemini가 429를 주고 화면은 규칙 해석으로 대체해요.
 
-const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
 const MAX_CHARS = 200;
 const TIMEOUT_MS = 15000;
 const LIMITS = {
@@ -112,7 +112,6 @@ async function callGemini(text, key, fetchImpl = fetch) {
             temperature: 0,
             responseMimeType: "application/json",
             responseSchema: SCHEMA,
-            thinkingConfig: { thinkingBudget: 0 }, // 조건 뽑기는 생각 단계가 필요 없어 꺼서 빠르고 싸게
           },
         }),
         signal: ctrl.signal,

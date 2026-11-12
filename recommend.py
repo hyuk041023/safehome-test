@@ -77,6 +77,49 @@ def parse_sentence(text):
     return cond, understood
 
 
+def cond_from_ai(fields):
+    """/api/parse(Gemini)가 돌려준 값 → parse_sentence와 같은 형식의 (cond, understood).
+    AI 답을 그대로 믿지 않고 허용된 값·범위만 받는다. 비어 있는 값은 넣지 않는다(추측 금지)."""
+    f = fields if isinstance(fields, dict) else {}
+
+    def num(key, lo, hi):
+        v = f.get(key)
+        return v if isinstance(v, int) and not isinstance(v, bool) and lo <= v <= hi else None
+
+    def pick(key, allowed):
+        v = f.get(key)
+        out = []
+        for x in v if isinstance(v, list) else []:
+            if x in allowed and x not in out:
+                out.append(x)
+        return out
+
+    cond, understood = {}, []
+    rent = num("max_rent_manwon", 1, 500)
+    if rent:
+        cond["max_rent"] = rent * 10_000
+        understood.append(f"월세 {rent}만 원 이하")
+    dep = num("max_deposit_manwon", 1, 100_000)
+    if dep:
+        cond["max_deposit"] = dep * 10_000
+        understood.append(f"보증금 {dep:,}만 원 이하")
+    walk_min = num("max_walk_min", 1, 120)
+    if walk_min:
+        cond["max_walk"] = walk_min
+        understood.append(f"도보 {walk_min}분 이내")
+    if f.get("gate") in GATES:
+        cond["gate"] = f["gate"]
+        understood.append(f"기준: {f['gate']}")
+    for key, allowed, label, joiner in (("kinds", KINDS, "유형: ", ", "),
+                                        ("options", OPTIONS, "필수 옵션: ", ", "),
+                                        ("priorities", FACTORS, "중요: ", " > ")):
+        vals = pick(key, allowed)
+        if vals:
+            cond[key] = vals
+            understood.append(label + joiner.join(vals))
+    return cond, understood
+
+
 # ── 필터 · 점수 ───────────────────────────────────────────────
 def option_list(row):
     return [o for o in (row["options"] or "").split(",") if o]

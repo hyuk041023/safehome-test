@@ -4,11 +4,15 @@
 2) 정보가 빠진 경우 추측하지 않고 '확인 필요'로 가는지
 3) 설문 가중치 · 우선순위 혼합값이 노션(11/10 회의록) 예시와 같은지
 4) 추천 결과가 필수 조건을 100% 만족하는지 (문제 정의 성공 기준)
+5) 실거래 시세 비교
+6) AI(Gemini) 답을 검사해서 받는지, AI가 실패하면 규칙 해석으로 대신하는지 (Gemini는 흉내만 냄)
 """
+import json
 import sqlite3
 import tempfile
 from pathlib import Path
 
+import ai_parse
 import db_seed
 import contract_check as cc
 import recommend as rc
@@ -100,6 +104,47 @@ def test_market(rows, db):
         assert rc.AREA_NAME in detail
 
 
+def test_ai_parse(rows):
+    """AI 답이 규칙 해석과 같은 형식으로 바뀌고, 이상한 값은 버려지는지. AI 실패 시 안내 문구가 나오는지."""
+    fields = {"max_rent_manwon": 40, "max_deposit_manwon": None, "max_walk_min": 10, "gate": "정문",
+              "kinds": ["원룸", "아파트"], "options": ["세탁기", "세탁기", "건조기"],
+              "priorities": ["조용함", "가격"]}
+    cond, understood = rc.cond_from_ai(fields)
+    assert cond == {"max_rent": 400_000, "max_walk": 10, "gate": "정문", "kinds": ["원룸"],
+                    "options": ["세탁기"], "priorities": ["조용함", "가격"]}, cond
+    rule_cond, _ = rc.parse_sentence("충북대 정문 걸어서 10분 안, 월세 40만 원 이하, 원룸, 조용하고 세탁기, 싼 곳")
+    assert rule_cond == cond, ("AI 결과와 규칙 결과의 형식이 같아야 함", rule_cond)
+    print("\n[6] AI 답 → 조건:", " · ".join(understood))
+
+    # 이상한 값: 음수·문자열·True·범위 밖·없는 문 → 전부 버림 (추측 금지)
+    bad, u = rc.cond_from_ai({"max_rent_manwon": -5, "max_deposit_manwon": "500", "max_walk_min": True,
+                              "gate": "남문", "kinds": "원룸", "priorities": None})
+    assert bad == {} and u == [], bad
+    assert rc.cond_from_ai(None) == ({}, [])
+
+    # AI 조건으로 검색해도 필수 조건 100% 만족
+    hits = rc.filter_listings(rows, cond)
+    assert hits and all(r["rent"] <= 400_000 and "세탁기" in r["options"] and r["walk_main"] <= 10 for r in hits)
+
+    # /api/parse 호출 흉내: 성공 / 키 없음 / 서버 오류 / 너무 긴 문장
+    ai_parse.os.environ["SAFEHOME_API_URL"] = "https://example.test/api/parse"
+    ok = lambda url, p: (200, json.dumps({"ok": True, "fields": fields}))
+    nokey = lambda url, p: (503, json.dumps({"ok": False, "error": "no_key",
+                                             "message": "AI 키가 아직 설정되지 않았어요. 규칙 해석으로 대신할게요."}))
+    broken = lambda url, p: (_ for _ in ()).throw(OSError("down"))
+    assert ai_parse.request_parse("월세 40", post=ok) == (fields, None)
+    f, msg = ai_parse.request_parse("월세 40", post=nokey)
+    assert f is None and "키" in msg
+    f, msg = ai_parse.request_parse("월세 40", post=broken)
+    assert f is None and "연결" in msg
+    f, msg = ai_parse.request_parse("가" * 201, post=ok)
+    assert f is None and "200자" in msg
+    del ai_parse.os.environ["SAFEHOME_API_URL"]
+    f, msg = ai_parse.request_parse("월세 40")
+    assert f is None and "규칙" in msg  # 주소가 없으면(로컬) 규칙으로
+    print("    AI 실패 시 안내:", msg)
+
+
 if __name__ == "__main__":
     db = Path(tempfile.mkdtemp()) / "test.db"
     db_seed.build(db)
@@ -109,4 +154,5 @@ if __name__ == "__main__":
     test_weights()
     test_filter_and_sentence(rows)
     test_market(rows, db)
+    test_ai_parse(rows)
     print("\n모든 테스트 통과 ✅")

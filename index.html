@@ -24,6 +24,9 @@
         files: {
           "app.py": { url: "./app.py" },
           "recommend.py": { url: "./recommend.py" },
+          "ai_parse.py": { url: "./ai_parse.py" },
+          // AI 조건 분석은 같은 사이트의 /api/parse(서버리스 함수)를 불러요. 키는 서버에만 있어요.
+          "site_origin.txt": { data: location.origin },
           "contract_check.py": { url: "./contract_check.py" },
           "db_seed.py": { url: "./db_seed.py" },
           "market_prices.csv": { url: "./market_prices.csv" },

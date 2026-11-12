@@ -1,14 +1,18 @@
-"""Safe Home MVP — 충북대 자취방 추천 + 계약 위험 점검 (AI 없는 규칙 기반 버전)
+"""Safe Home MVP — 충북대 자취방 추천 + 계약 위험 점검
 
 실행: streamlit run app.py
 화면: ① 집 찾기  ② 추천 결과  ③ 계약 점검
 데이터: safehome.db (가상 매물 100건 · 텍스트 가상 계약서/등기) + market_prices.csv (국토부 실거래가 중위값).
        DB가 없으면 자동 생성.
+AI: 문장 → 조건 해석에만 Gemini를 써요(버튼 「AI로 조건 분석」, /api/parse 서버리스 함수 경유).
+    검색·점수·계약 점검은 전부 규칙이에요. 「매물 검색」은 AI를 부르지 않아요 (11/12 회의 결정).
 """
+import copy
 from pathlib import Path
 
 import streamlit as st
 
+import ai_parse
 import contract_check as cc
 import db_seed
 import recommend as rc
@@ -49,16 +53,33 @@ MARKET_TAG = "국토부 실거래가" if _real else "샘플 시세"
 DEFAULTS = dict(f_rent=45, f_dep="상관없음", f_gate="정문", f_walk=15,
                 f_kinds=list(rc.KINDS), f_opts=[], f_pri=[], f_top=5,
                 sentence="충북대 정문 걸어서 10분 안, 월세 40만 원 이하, 조용하고 세탁기 있는 곳",
-                sel_listing=rows[0]["id"])
+                sel_listing=rows[0]["id"], ai_calls=0, searched=None, just_searched=False)
 for k, v in DEFAULTS.items():
     st.session_state.setdefault(k, v)
 DEPOSIT_CHOICES = {"300만 원": 3_000_000, "500만 원": 5_000_000, "1,000만 원": 10_000_000,
                    "1,500만 원": 15_000_000, "2,000만 원": 20_000_000, "상관없음": None}
 
 
-def apply_sentence():
-    """문장을 규칙으로 해석해 입력칸을 채운다. 읽지 못한 값은 기존 값을 그대로 둔다."""
-    cond, understood = rc.parse_sentence(st.session_state.sentence)
+def run_ai():
+    """「AI로 조건 분석」: Gemini 1회 호출 → 입력칸 채우기. 실패하면 규칙 해석으로 대신한다."""
+    sentence = st.session_state.sentence
+    note = None
+    if st.session_state.ai_calls >= ai_parse.SESSION_LIMIT:
+        fields, note = None, f"AI 분석은 한 번 접속에 {ai_parse.SESSION_LIMIT}번까지예요. 규칙 해석으로 대신할게요."
+    else:
+        st.session_state.ai_calls += 1
+        fields, note = ai_parse.request_parse(sentence)
+    if fields is not None:
+        cond, understood = rc.cond_from_ai(fields)
+        source = "ai"
+    else:
+        cond, understood = rc.parse_sentence(sentence)
+        source = "rule"
+    fill_inputs(cond, understood, source, note)
+
+
+def fill_inputs(cond, understood, source, note=None):
+    """해석한 조건으로 입력칸을 채운다. 읽지 못한 값은 기존 값을 그대로 둔다."""
     if "max_rent" in cond:
         st.session_state.f_rent = cond["max_rent"] // 10_000
     if "max_deposit" in cond:
@@ -76,6 +97,15 @@ def apply_sentence():
     if "priorities" in cond:
         st.session_state.f_pri = cond["priorities"]
     st.session_state.understood = understood
+    st.session_state.parse_source = source
+    st.session_state.parse_note = note
+
+
+def run_search():
+    """「매물 검색」: 지금 입력칸 값으로만 검색한다. Gemini 호출 0회."""
+    st.session_state.searched = dict(cond=copy.deepcopy(current_condition()), top=st.session_state.f_top,
+                                     dep_label=st.session_state.f_dep)
+    st.session_state.just_searched = True
 
 
 def pick_listing(listing_id):
@@ -90,9 +120,14 @@ def current_condition():
                 priorities=st.session_state.f_pri)
 
 
-def condition_tags(c):
+if st.session_state.searched is None:  # 처음 열면 기본 입력값으로 한 번 검색해 둔다
+    run_search()
+    st.session_state.just_searched = False
+
+
+def condition_tags(c, dep_label):
     tags = [f"월세 {c['max_rent'] // 10_000}만 원 이하",
-            f"보증금 {st.session_state.f_dep} 이하" if c["max_deposit"] else "보증금 상관없음",
+            f"보증금 {dep_label} 이하" if c["max_deposit"] else "보증금 상관없음",
             f"{c['gate']} 도보 {c['max_walk']}분 이내"]
     if c["kinds"] and len(c["kinds"]) < len(rc.KINDS):
         tags.append("유형: " + ", ".join(c["kinds"]))
@@ -110,7 +145,8 @@ def check_listing(listing_id, contract_text, registry_text):
 # ── 헤더 ──────────────────────────────────────────────────────
 st.title("🏠 Safe Home")
 st.caption("충북대 근처 자취방을 찾고, 계약 전에 위험 신호를 같이 확인해요.")
-st.info("시연용 MVP예요. 매물·계약서·등기·시세는 모두 **가상 샘플 데이터**이고, 결과는 참고용이에요. "
+st.info("시연용 MVP예요. 매물·계약서·등기는 **가상 샘플 데이터**이고, "
+        f"**시세만 {MARKET_TAG}**를 썼어요. 결과는 참고용이에요. "
         "계약의 안전을 보장하지 않으며 법률 자문이 아니에요.", icon="ℹ️")
 
 with st.sidebar:
@@ -122,22 +158,28 @@ with st.sidebar:
                 f"- 시세 ±{rc.MARKET_BAND:.0%} 이내면 '비슷'\n"
                 f"- 시세 출처: {MARKET_SOURCE}. 거래 {rc.MIN_SAMPLES}건 미만인 동은 {rc.AREA_NAME} 전체 기준\n"
                 f"- 보증금 회수 위험 비율 {cc.RATIO_CAUTION:.0%} 주의 · {cc.RATIO_RISK:.0%} 위험")
-    st.caption("판정은 모두 규칙으로 계산해요. 같은 입력이면 항상 같은 결과가 나와요.")
+    st.caption("AI(Gemini)는 문장을 조건으로 바꾸는 데만 써요. 검색·점수·계약 판정은 모두 규칙으로 계산해서, "
+               "같은 입력이면 항상 같은 결과가 나와요.")
 
 tab1, tab2, tab3 = st.tabs(["① 집 찾기", "② 추천 결과", "③ 계약 점검"])
 
 # ── ① 집 찾기 ─────────────────────────────────────────────────
 with tab1:
     st.subheader("어떤 집을 찾고 있나요?")
-    st.text_input("문장으로 말해 주세요", key="sentence")
-    st.button("문장으로 조건 채우기", on_click=apply_sentence, type="primary")
+    st.text_input("문장으로 말해 주세요", key="sentence", max_chars=ai_parse.MAX_CHARS)
+    left = ai_parse.SESSION_LIMIT - st.session_state.ai_calls
+    st.button("🤖 AI로 조건 분석", on_click=run_ai,
+              help=f"Gemini를 1번 불러 문장을 아래 입력칸으로 바꿔요. 이번 접속에서 {max(left, 0)}번 남았어요.")
     if st.session_state.get("understood") is not None:
         u = st.session_state.understood
+        who = "AI(Gemini)가 이해한 조건" if st.session_state.get("parse_source") == "ai" else "규칙으로 이해한 조건"
+        if st.session_state.get("parse_note"):
+            st.warning(st.session_state.parse_note)
         if u:
-            st.success("이해한 조건: " + " · ".join(u))
+            st.success(f"{who}: " + " · ".join(u))
         else:
             st.warning("문장에서 조건을 찾지 못했어요. 아래 입력칸에서 직접 골라 주세요.")
-    st.caption("문장에서 읽지 못한 조건은 추측하지 않아요. 아래 입력칸에서 언제든 직접 고칠 수 있어요.")
+    st.caption("문장에서 읽지 못한 조건은 추측하지 않아요. 아래 입력칸을 확인·수정한 뒤 「매물 검색」을 눌러 주세요.")
 
     st.divider()
     c1, c2, c3 = st.columns(3)
@@ -153,19 +195,30 @@ with tab1:
     st.multiselect("중요하게 보는 것 (고른 순서가 우선순위)", rc.FACTORS, key="f_pri",
                    help="고르지 않으면 설문 기본 가중치를 써요. 고르면 설문값 50% + 고른 순서 50%로 섞어요.")
     st.radio("추천 개수", [3, 5], horizontal=True, key="f_top")
-    st.caption("입력하면 바로 ② 추천 결과에 반영돼요.")
+    st.button("🔎 매물 검색", on_click=run_search, type="primary",
+              help="지금 입력칸 값으로 매물을 찾아요. AI는 부르지 않아요.")
+    searched = st.session_state.searched
+    if st.session_state.just_searched:
+        n = len(rc.filter_listings(rows, searched["cond"]))
+        st.success(f"{n}건을 찾았어요. 위의 **② 추천 결과** 탭에서 확인하세요.")
+        st.session_state.just_searched = False
+    elif current_condition() != searched["cond"] or st.session_state.f_top != searched["top"]:
+        st.caption("입력이 바뀌었어요. 「매물 검색」을 누르면 ② 추천 결과에 반영돼요.")
 
 # ── ② 추천 결과 ───────────────────────────────────────────────
 with tab2:
-    cond = current_condition()
+    searched = st.session_state.searched
+    cond = searched["cond"]
     weights = rc.blend_weights(cond["priorities"])
-    st.markdown("**지금 적용된 조건** — 틀린 곳은 ① 집 찾기에서 고치면 바로 다시 찾아요.")
-    st.markdown(" ".join(f"`{t}`" for t in condition_tags(cond)))
+    st.markdown("**검색한 조건** — 바꾸려면 ① 집 찾기에서 고친 뒤 「매물 검색」을 눌러 주세요.")
+    st.markdown(" ".join(f"`{t}`" for t in condition_tags(cond, searched["dep_label"])))
+    if current_condition() != cond:
+        st.caption("※ ① 집 찾기의 입력이 이 조건과 달라요. 「매물 검색」을 아직 누르지 않았어요.")
     if "조용함" not in (cond["priorities"] or []) and "조용" in (st.session_state.sentence or ""):
         st.caption("※ '조용함'은 우선순위에 넣었을 때만 점수에 반영돼요.")
 
     hits = rc.filter_listings(rows, cond)
-    ranked = rc.score_listings(hits, weights, cond["gate"])[: st.session_state.f_top]
+    ranked = rc.score_listings(hits, weights, cond["gate"])[: searched["top"]]
     st.write(f"조건을 모두 만족하는 매물 **{len(hits)}건** 중 상위 {len(ranked)}건")
     if not ranked:
         st.warning("조건에 맞는 매물이 없어요. 월세 상한이나 도보 시간을 조금 늘려 보세요.")

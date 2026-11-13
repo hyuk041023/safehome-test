@@ -339,6 +339,64 @@ def count_flags(result):
     return {RISK: cnt[RISK], CAUTION: cnt[CAUTION], UNKNOWN: cnt[UNKNOWN]}
 
 
+# 항목 → 근거가 된 줄 (계약서 줄 키, 등기 줄 키)
+LINE_KEYS = {
+    "owner": (["lessor", "agent"], ["owner"]),
+    "ratio": (["deposit", "prior", "value"], ["mortgage"]),
+    "seizure": ([], ["seizure", "provisional"]),
+    "trust": ([], ["trust", "owner"]),
+    "lease_reg": ([], ["lease_reg"]),
+    "transfer": ([], ["owner"]),
+    "tax": (["tax"], []),
+}
+
+
+def highlights(result):
+    """③ 화면용: 위험·주의 항목에 번호를 붙이고, 계약서·등기의 어느 줄에서 나왔는지 정리한다.
+
+    반환 dict(notes=[{no, status, title, detail, question}],
+              marks={"contract": {줄에 들어 있는 문자열: [번호, ...]}, "registry": {...}})
+    """
+    c, r = result["contract"], result["registry"]
+    notes, marks = [], {"contract": {}, "registry": {}}
+
+    def mark(doc, text, no):
+        if text:
+            marks[doc].setdefault(text.strip(), []).append(no)
+
+    for it in result["items"]:
+        if it["key"] == "special":
+            for s in it.get("specials", []):
+                if s["status"] in (RISK, CAUTION):
+                    no = len(notes) + 1
+                    notes.append(dict(no=no, status=s["status"], title=f"특약 · {s['type']}",
+                                      detail=s["why"], question=s["question"]))
+                    mark("contract", s["sentence"], no)
+            continue
+        if it["status"] not in (RISK, CAUTION):
+            continue
+        no = len(notes) + 1
+        notes.append(dict(no=no, status=it["status"], title=it["name"], detail=it["detail"],
+                          question=it["question"]))
+        c_keys, r_keys = LINE_KEYS.get(it["key"], ([], []))
+        for k in c_keys:
+            mark("contract", c["lines"].get(k), no)
+        for k in r_keys:
+            line = r["lines"].get(k)
+            if k in ("seizure", "provisional", "trust", "lease_reg") and line and "없음" in line:
+                continue  # '압류: 있음'일 때 옆의 '가압류: 없음' 줄까지 칠하지 않음
+            mark("registry", line, no)
+    return dict(notes=notes, marks=marks)
+
+
+def line_marks(line, doc_marks):
+    """한 줄에 붙은 번호 목록 (줄 안에 표시 대상 문자열이 들어 있으면)."""
+    s = (line or "").strip()
+    if not s:
+        return []
+    return sorted({n for key, nos in doc_marks.items() if key and key in s for n in nos})
+
+
 def message_draft(listing_name, questions):
     """집주인·중개사에게 보낼 문자 초안 (템플릿 기반, AI 없음)."""
     if not questions:

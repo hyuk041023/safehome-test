@@ -145,6 +145,27 @@ def test_ai_parse(rows):
     print("    AI 실패 시 안내:", msg)
 
 
+def test_highlights(rows, docs, regs):
+    """③ 화면의 줄 표시: 위험·주의 항목마다 번호가 있고, 그 번호가 계약서나 등기의 실제 줄에 붙는지.
+    '없음'이라고 적힌 줄에는 위험 표시가 붙지 않는지."""
+    for r in rows:
+        res = cc.check(docs[r["id"]], regs[r["id"]])
+        h = cc.highlights(res)
+        flagged = [i for i in res["items"] if i["status"] in (cc.RISK, cc.CAUTION)]
+        assert (len(h["notes"]) > 0) == bool(flagged), (r["case_id"], h["notes"])
+        used = set()
+        for doc, text in (("contract", docs[r["id"]]), ("registry", regs[r["id"]])):
+            for line in text.splitlines():
+                nos = cc.line_marks(line, h["marks"][doc])
+                used.update(nos)
+                if nos and doc == "registry" and any(k in line for k in ("압류", "가압류", "신탁", "임차권")):
+                    assert "없음" not in line, (r["case_id"], line)
+        assert used == {n["no"] for n in h["notes"]}, (r["case_id"], used, h["notes"])
+    e = next(r for r in rows if r["case_id"] == "E")
+    h = cc.highlights(cc.check(docs[e["id"]], regs[e["id"]]))
+    print("\n[7] 계약서 위험 줄 표시 (사례 E):", " / ".join(f"{n['no']}. {n['title']}" for n in h["notes"]))
+
+
 if __name__ == "__main__":
     db = Path(tempfile.mkdtemp()) / "test.db"
     db_seed.build(db)
@@ -155,4 +176,5 @@ if __name__ == "__main__":
     test_filter_and_sentence(rows)
     test_market(rows, db)
     test_ai_parse(rows)
+    test_highlights(rows, docs, regs)
     print("\n모든 테스트 통과 ✅")

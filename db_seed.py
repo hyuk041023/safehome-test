@@ -2,7 +2,8 @@
 
 - listings      : 충북대 주변 가상 매물 100건 (동마다 25건)
 - contracts     : 매물별 가상 계약서 (텍스트 원문 그대로 저장)
-- registries    : 매물별 가상 등기사항 요약 (텍스트 원문 그대로 저장)
+- cases         : 계약서 사례 10종과 기대 결과
+  (11/13 회의: 등기 등 다른 서류는 분석하지 않고 사용자가 직접 확인하도록 안내 → 가상 등기 표는 뺌)
 - market_prices : 동·유형별 시세. market_prices.csv(국토부 실거래가)가 있으면 그 값,
                   없으면 가상 매물로 만든 샘플값
 
@@ -37,63 +38,45 @@ OPTIONS = ["세탁기", "냉장고", "에어컨", "인덕션", "침대", "책상
 LESSORS = ["김가상", "이샘플", "박예시", "최테스트", "정모의", "한가짜", "윤데모", "임시연"]
 
 # ──────────────────────────────────────────────────────────────
-# 계약·등기 사례 10종. 각 매물은 사례 하나를 따른다.
-# target_ratio: (근저당 채권최고액 + 선순위 보증금 + 내 보증금) ÷ 건물 추정 시세 목표값
-# None 값은 "문서에 그 줄이 아예 없음"(정보 부족)을 뜻한다.
+# 가상 계약서 사례 10종 (11/13 회의: 계약서만 직접 분석). 각 매물은 사례 하나를 따른다.
+# missing: 계약서에서 뺄 줄. tax: 확인·설명서의 납세증명서 칸 (None이면 줄 없음).
+# expected: contract_check.overall()이 내야 하는 문구.
 # ──────────────────────────────────────────────────────────────
 CASES = {
-    "A": dict(title="정상 계약", expected="큰 위험 신호 없음",
-              owner_mismatch=False, agent=False, target_ratio=0.45, prior_frac=0.15,
-              show_mortgage=True, show_prior=True, show_value=True,
-              seizure=False, trust=False, lease_reg=False, transfer_days=2400, tax="확인함",
+    "A": dict(title="세입자 보호 특약", expected="계약서에서 위험 문구를 찾지 못했어요",
+              agent=False, missing=[], tax="확인함 (국세·지방세 완납)",
               specials=["임대인은 잔금일 다음날까지 근저당 등 담보권을 설정하지 않는다.",
-                        "임대인이 보증금을 반환하지 못할 경우 임차인은 계약을 해제할 수 있다."]),
-    "B": dict(title="임대인·소유자 불일치", expected="위험 신호 있음",
-              owner_mismatch=True, agent=False, target_ratio=0.40, prior_frac=0.10,
-              show_mortgage=True, show_prior=True, show_value=True,
-              seizure=False, trust=False, lease_reg=False, transfer_days=1800, tax="확인함",
+                        "임대인이 보증금을 반환하지 못할 경우 임차인은 계약을 해제할 수 있다.",
+                        "관리비에는 수도·인터넷 요금이 포함된다."]),
+    "B": dict(title="대리인 계약", expected="계약서에 주의할 문구가 있어요",
+              agent=True, missing=[], tax="확인함",
               specials=["계약 기간 중 시설 고장은 임대인이 수리한다."]),
-    "C": dict(title="보증금 회수 위험 높음", expected="위험 신호 있음",
-              owner_mismatch=False, agent=False, target_ratio=0.88, prior_frac=0.30,
-              show_mortgage=True, show_prior=True, show_value=True,
-              seizure=False, trust=False, lease_reg=False, transfer_days=1500, tax="확인함",
-              specials=["관리비에는 수도·인터넷 요금이 포함된다."]),
-    "D": dict(title="정보 부족", expected="확인 후 판단",
-              owner_mismatch=False, agent=False, target_ratio=0.40, prior_frac=0.10,
-              show_mortgage=False, show_prior=False, show_value=True,
-              seizure=None, trust=False, lease_reg=False, transfer_days=2000, tax=None,
-              specials=["반려동물은 키울 수 없다."]),
-    "E": dict(title="위험 특약", expected="위험 신호 있음",
-              owner_mismatch=False, agent=False, target_ratio=0.40, prior_frac=0.10,
-              show_mortgage=True, show_prior=True, show_value=True,
-              seizure=False, trust=False, lease_reg=False, transfer_days=1300, tax="미확인",
+    "C": dict(title="전입신고 제한", expected="계약서에 위험 문구가 있어요",
+              agent=False, missing=[], tax="확인함",
               specials=["임차인은 계약 기간 동안 전입신고를 하지 않는다.",
-                        "보증금은 새 임차인이 입주한 후에 반환한다."]),
-    "F": dict(title="신탁 등기", expected="위험 신호 있음",
-              owner_mismatch=False, agent=False, target_ratio=0.35, prior_frac=0.10,
-              show_mortgage=True, show_prior=True, show_value=True,
-              seizure=False, trust=True, lease_reg=False, transfer_days=900, tax="확인함",
-              specials=["계약 기간 중 시설 고장은 임대인이 수리한다."]),
-    "G": dict(title="최근 소유권 이전 + 임차권등기", expected="주의 필요",
-              owner_mismatch=False, agent=False, target_ratio=0.45, prior_frac=0.15,
-              show_mortgage=True, show_prior=True, show_value=True,
-              seizure=False, trust=False, lease_reg=True, transfer_days=30, tax="확인함",
-              specials=["계약 기간 중 시설 고장은 임대인이 수리한다."]),
-    "H": dict(title="보증금 비율 주의 + 수리비 전가", expected="주의 필요",
-              owner_mismatch=False, agent=False, target_ratio=0.73, prior_frac=0.30,
-              show_mortgage=True, show_prior=True, show_value=True,
-              seizure=False, trust=False, lease_reg=False, transfer_days=2600, tax="확인함",
-              specials=["계약 기간 중 발생하는 모든 수리 비용은 임차인이 부담한다."]),
-    "I": dict(title="대리인 계약", expected="주의 필요",
-              owner_mismatch=True, agent=True, target_ratio=0.40, prior_frac=0.10,
-              show_mortgage=True, show_prior=True, show_value=True,
-              seizure=False, trust=False, lease_reg=False, transfer_days=2100, tax="확인함",
-              specials=["계약 기간 중 시설 고장은 임대인이 수리한다."]),
-    "J": dict(title="압류 등기", expected="위험 신호 있음",
-              owner_mismatch=False, agent=False, target_ratio=0.40, prior_frac=0.10,
-              show_mortgage=True, show_prior=True, show_value=True,
-              seizure=True, trust=False, lease_reg=False, transfer_days=1700, tax="확인함",
+                        "반려동물은 키울 수 없다."]),
+    "D": dict(title="정보 누락", expected="계약서에 확인할 부분이 있어요",
+              agent=False, missing=["계약기간", "선순위", "납세", "특약"], tax=None, specials=[]),
+    "E": dict(title="보증금 반환 지연", expected="계약서에 위험 문구가 있어요",
+              agent=False, missing=[], tax="확인함",
+              specials=["보증금은 새 임차인이 입주한 후에 반환한다."]),
+    "F": dict(title="추가 대출 동의", expected="계약서에 위험 문구가 있어요",
+              agent=False, missing=[], tax="확인함",
+              specials=["임차인은 계약 기간 중 임대인의 추가 대출 및 근저당 설정에 동의한다."]),
+    "G": dict(title="수리비 전가", expected="계약서에 주의할 문구가 있어요",
+              agent=False, missing=[], tax="확인함",
+              specials=["계약 기간 중 발생하는 모든 수리 비용은 임차인이 부담한다.",
+                        "실내 흡연은 금지한다."]),
+    "H": dict(title="원상복구 + 납세 미확인", expected="계약서에 주의할 문구가 있어요",
+              agent=False, missing=[], tax="미확인",
               specials=["퇴실 시 도배·장판 전체를 임차인 비용으로 원상복구한다."]),
+    "I": dict(title="중도 해지 위약금", expected="계약서에 주의할 문구가 있어요",
+              agent=False, missing=[], tax="확인함",
+              specials=["임차인이 중도 퇴실하는 경우 보증금에서 월세 3개월분을 위약금으로 공제한다."]),
+    "J": dict(title="규칙에 없는 특약", expected="계약서에 확인할 부분이 있어요",
+              agent=False, missing=[], tax="확인함",
+              specials=["임대인의 사정으로 계약 기간 중 같은 건물의 다른 호실로 옮길 수 있다.",
+                        "계약 만료 1개월 전까지 연락이 없으면 같은 조건으로 1년 연장된 것으로 본다."]),
 }
 
 
@@ -163,6 +146,7 @@ def make_listings(rng: random.Random, market=None):
                 walk_back=rng.randint(*gates["후문"]),
                 value=value, case=case_keys[(idx - 1) % len(case_keys)],
                 lessor=LESSORS[idx % len(LESSORS)],
+                prior_frac=0.10 + (idx % 5) * 0.05,  # 선순위 보증금 ÷ 시세 (가상, 난수 순서를 바꾸지 않게 번호로 정함)
             ))
     return rows
 
@@ -170,7 +154,8 @@ def make_listings(rng: random.Random, market=None):
 def render_contract(l: dict) -> str:
     """가상 계약서를 사람이 읽는 텍스트 형태로 만든다 (DB에는 이 원문이 저장된다)."""
     c = CASES[l["case"]]
-    prior = int(l["value"] * c["prior_frac"])
+    miss = set(c["missing"])
+    prior = int(l["value"] * l["prior_frac"])
     lines = [
         "부동산 월세 계약서 (가상 샘플 · 실제 계약서 아님)",
         f"작성일: {WRITTEN_DATE:%Y.%m.%d}",
@@ -184,49 +169,17 @@ def render_contract(l: dict) -> str:
         f"보증금: {won(l['deposit'])}",
         f"월세: {won(l['rent'])} (매월 25일 지급)",
         f"관리비: {won(l['maint'])}",
-        "계약기간: 2027.02.20 ~ 2028.02.19",
-        "",
-        "[중개대상물 확인·설명서 기재 사항]",
     ]
-    if c["show_value"]:
-        lines.append(f"건물 추정 시세: {won(l['value'])}")
-    if c["show_prior"]:
+    if "계약기간" not in miss:
+        lines.append("계약기간: 2027.02.20 ~ 2028.02.19")
+    lines += ["", "[중개대상물 확인·설명서 기재 사항]", f"건물 추정 시세: {won(l['value'])}"]
+    if "선순위" not in miss:
         lines.append(f"선순위 보증금 합계: {won(prior)}")
-    if c["tax"] is not None:
+    if c["tax"] is not None and "납세" not in miss:
         lines.append(f"납세증명서: {c['tax']}")
-    lines += ["", "[특약사항]"]
-    lines += [f"{i}. {t}" for i, t in enumerate(c["specials"], 1)]
-    return "\n".join(lines)
-
-
-def render_registry(l: dict) -> str:
-    """가상 등기사항 요약 텍스트."""
-    c = CASES[l["case"]]
-    owner = "강다른" if c["owner_mismatch"] else l["lessor"]
-    transfer = WRITTEN_DATE - timedelta(days=c["transfer_days"])
-    prior = int(l["value"] * c["prior_frac"])
-    mortgage = max(0, int(l["value"] * c["target_ratio"]) - prior - l["deposit"])
-    mortgage = mortgage // 100_000 * 100_000
-    lines = [
-        "등기사항전부증명서 요약 (가상 샘플 · 실제 등기 아님)",
-        f"[표제부] {l['address'].rsplit(',', 1)[0]} ({'오피스텔' if l['kind'] == '오피스텔' else '다가구주택'})",
-        "[갑구] 소유권에 관한 사항",
-        f"소유자: {'(주)가상신탁' if c['trust'] else owner} ({transfer:%Y.%m.%d} 소유권이전)",
-    ]
-    if c["trust"]:
-        lines.append(f"신탁: 있음 (위탁자 {owner}, 수탁자 (주)가상신탁)")
-    else:
-        lines.append("신탁: 없음")
-    if c["seizure"] is True:
-        lines.append("압류: 있음 (청주시 서원구청, 2026.08.04)")
-        lines.append("가압류: 없음")
-    elif c["seizure"] is False:
-        lines.append("압류: 없음")
-        lines.append("가압류: 없음")
-    lines.append("임차권등기: " + ("있음 (2026.06.15, 202호 임차인)" if c["lease_reg"] else "없음"))
-    lines.append("[을구] 소유권 이외의 권리")
-    if c["show_mortgage"]:
-        lines.append(f"근저당권: 채권최고액 {won(mortgage)}" if mortgage else "근저당권: 없음")
+    if "특약" not in miss:
+        lines += ["", "[특약사항]"]
+        lines += [f"{i}. {t}" for i, t in enumerate(c["specials"], 1)]
     return "\n".join(lines)
 
 
@@ -249,12 +202,11 @@ def build_memory(seed: int = 45):
     """DB 없이 같은 데이터를 메모리에서 만든다 (sqlite3가 없는 브라우저 환경용)."""
     real = load_real_market()
     listings = make_listings(random.Random(seed), real[0] if real else None)
-    rows = [{**{k: v for k, v in l.items() if k not in ("value", "case", "lessor")}, "case_id": l["case"]}
-            for l in listings]
+    rows = [{**{k: v for k, v in l.items() if k not in ("value", "case", "lessor", "prior_frac")},
+             "case_id": l["case"]} for l in listings]
     contracts = {l["id"]: render_contract(l) for l in listings}
-    registries = {l["id"]: render_registry(l) for l in listings}
     market = {(m["dong"], m["kind"]): (m["median_monthly"], m["sample_n"]) for m in make_market(listings, real)}
-    return rows, contracts, registries, market
+    return rows, contracts, market
 
 
 def build(db_path: Path = DB_PATH, seed: int = 45) -> Path:
@@ -278,10 +230,6 @@ def build(db_path: Path = DB_PATH, seed: int = 45) -> Path:
         listing_id INTEGER PRIMARY KEY REFERENCES listings(id),
         case_id TEXT, contract_text TEXT
     );
-    CREATE TABLE registries (
-        listing_id INTEGER PRIMARY KEY REFERENCES listings(id),
-        registry_text TEXT
-    );
     CREATE TABLE cases (case_id TEXT PRIMARY KEY, title TEXT, expected TEXT);
     CREATE TABLE market_prices (
         dong TEXT, kind TEXT, median_monthly INTEGER, sample_n INTEGER,
@@ -294,7 +242,6 @@ def build(db_path: Path = DB_PATH, seed: int = 45) -> Path:
             l["maint"], l["area"], l["light"], l["quiet"], l["options"],
             l["walk_main"], l["walk_mid"], l["walk_back"], l["case"]))
         cur.execute("INSERT INTO contracts VALUES (?,?,?)", (l["id"], l["case"], render_contract(l)))
-        cur.execute("INSERT INTO registries VALUES (?,?)", (l["id"], render_registry(l)))
     for k, c in CASES.items():
         cur.execute("INSERT INTO cases VALUES (?,?,?)", (k, c["title"], c["expected"]))
     for m in make_market(listings, real):

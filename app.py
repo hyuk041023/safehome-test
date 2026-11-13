@@ -2,10 +2,12 @@
 
 실행: streamlit run app.py
 화면: 1 집 찾기 → 2 추천 결과 → 3 계약 점검 (버튼을 누르면 다음 단계로 자동 이동)
-데이터: safehome.db (가상 매물 100건 · 텍스트 가상 계약서/등기) + market_prices.csv (국토부 실거래가 중위값).
+데이터: safehome.db (가상 매물 100건 · 텍스트 가상 계약서) + market_prices.csv (국토부 실거래가 중위값).
        DB가 없으면 자동 생성.
 문장 해석: 「찾기」는 문장을 Gemini(/api/parse 서버리스 함수)로 조건으로 바꾼 뒤 바로 검색해요. 실패하면 규칙 해석.
-          「이 조건으로 찾기」는 입력칸 값으로만 검색해요(Gemini 0회). 검색·점수·계약 점검은 전부 규칙이에요.
+          「이 조건으로 찾기」는 입력칸 값으로만 검색해요(Gemini 0회). 검색·점수는 규칙이에요.
+계약 점검(11/13): 가상 계약서만 규칙으로 분석하고, 등기·건축물대장·세금·현장은 직접 확인할 체크리스트(미확인)로
+          따로 보여 줘요. 「AI로 특약 설명 듣기」를 누를 때만 Gemini가 특약 설명·질문을 만들어요(실패하면 규칙 결과).
 """
 import copy
 import html
@@ -64,16 +66,25 @@ def load_data():
         db_seed.build(DB_PATH)
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
-    rows = [dict(r) for r in con.execute("SELECT * FROM listings ORDER BY id")]
+    try:
+        rows = [dict(r) for r in con.execute("SELECT * FROM listings ORDER BY id")]
+        con.execute("SELECT expected FROM cases LIMIT 1")
+        if con.execute("SELECT name FROM sqlite_master WHERE name='registries'").fetchone():
+            raise sqlite3.OperationalError("old db")  # 11/13 이전 DB면 새로 만든다
+    except sqlite3.OperationalError:
+        con.close()
+        db_seed.build(DB_PATH)
+        con = sqlite3.connect(DB_PATH)
+        con.row_factory = sqlite3.Row
+        rows = [dict(r) for r in con.execute("SELECT * FROM listings ORDER BY id")]
     contracts = {r["listing_id"]: r["contract_text"] for r in con.execute("SELECT * FROM contracts")}
-    registries = {r["listing_id"]: r["registry_text"] for r in con.execute("SELECT * FROM registries")}
     market = {(r["dong"], r["kind"]): (r["median_monthly"], r["sample_n"])
               for r in con.execute("SELECT * FROM market_prices")}
     con.close()
-    return rows, contracts, registries, market
+    return rows, contracts, market
 
 
-rows, contracts, registries, market = load_data()
+rows, contracts, market = load_data()
 by_id = {r["id"]: r for r in rows}
 
 # ── 상태 ──────────────────────────────────────────────────────
@@ -150,6 +161,13 @@ def find_by_inputs():
     go(2)
 
 
+def explain_specials(ai_key, sentences):
+    """「AI로 특약 설명 듣기」: Gemini 1회. 실패해도 규칙 결과는 그대로 보여 준다."""
+    st.session_state.ai_calls += 1
+    items, message = ai_parse.request_specials(sentences)
+    st.session_state[ai_key] = dict(items=items, message=message)
+
+
 def open_contract(listing_id):
     st.session_state.sel_listing = listing_id
     go(3)
@@ -189,12 +207,20 @@ def badge(status, text=None):
 
 
 @st.cache_data
-def check_listing(contract_text, registry_text):
-    return cc.check(contract_text, registry_text)
+def check_listing(contract_text, kind):
+    return cc.check(contract_text, kind)
+
+
+def links(sources, prefix="근거"):
+    if not sources:
+        return ""
+    return (f'<div class="sh-muted">{prefix}: '
+            + " · ".join(f'<a href="{html.escape(u)}" target="_blank">{html.escape(t)}</a>' for t, u in sources)
+            + "</div>")
 
 
 def doc_html(text, doc_marks, note_status):
-    """계약서·등기 텍스트를 문서처럼 그리고, 위험·주의 줄에 색과 번호를 붙인다."""
+    """계약서 텍스트를 문서처럼 그리고, 위험·주의·확인 필요 줄에 색과 번호를 붙인다."""
     out = []
     for i, line in enumerate(text.splitlines()):
         s = line.strip()
@@ -273,7 +299,7 @@ elif step == 2:
 
     for rank, item in enumerate(ranked, 1):
         r = item["row"]
-        res = check_listing(contracts[r["id"]], registries[r["id"]])
+        res = check_listing(contracts[r["id"]], r["kind"])
         flags = cc.count_flags(res)
         mk = rc.market_compare(r, market)
         reasons, weak = rc.explain(item, weights, s["cond"]["gate"])
@@ -295,11 +321,13 @@ elif step == 2:
             tone = {"낮음": cc.OK, "비슷": cc.UNKNOWN, "높음": cc.CAUTION}.get(mk["label"], cc.UNKNOWN)
             line = [badge(tone, f"시세 {mk['label']}")]
             if flags[cc.RISK]:
-                line.append(badge(cc.RISK, f"계약 위험 {flags[cc.RISK]}"))
+                line.append(badge(cc.RISK, f"계약서 위험 문구 {flags[cc.RISK]}"))
             if flags[cc.CAUTION]:
-                line.append(badge(cc.CAUTION, f"주의 {flags[cc.CAUTION]}"))
-            if not flags[cc.RISK] and not flags[cc.CAUTION]:
-                line.append(badge(cc.OK, "계약 위험 신호 없음"))
+                line.append(badge(cc.CAUTION, f"주의 문구 {flags[cc.CAUTION]}"))
+            if flags[cc.UNKNOWN]:
+                line.append(badge(cc.UNKNOWN, f"확인 필요 {flags[cc.UNKNOWN]}"))
+            if not any(flags.values()):
+                line.append(badge(cc.OK, "계약서 위험 문구 없음"))
             if mk["diff"] is not None:
                 line.append(f'<span class="sh-muted">주변 {r["kind"]} 실거래 시세 대비 {mk["diff"]:+.0%}</span>')
             st.markdown("".join(line), unsafe_allow_html=True)
@@ -323,69 +351,126 @@ else:
     lid = st.session_state.sel_listing
     row = by_id[lid]
     contract_text = st.session_state.get(f"ct_{lid}", contracts[lid])
-    registry_text = st.session_state.get(f"rg_{lid}", registries[lid])
+    ai_key = f"ai_{lid}_{hash(contract_text)}"
+    ai_state = st.session_state.get(ai_key)  # dict(items=..., message=...) 또는 None
 
-    res = cc.check(contract_text, registry_text)
+    res = cc.check(contract_text, row["kind"], ai_items=(ai_state or {}).get("items"))
     hl = cc.highlights(res)
     note_status = {n["no"]: n["status"] for n in hl["notes"]}
     flags = cc.count_flags(res)
+    todo = [ck for ck in res["checklist"] if not st.session_state.get(f"ck_{lid}_{ck['key']}")]
 
     st.markdown(f"### {row['name']}")
-    st.markdown(f'<div class="sh-muted">보증금 {row["deposit"] // 10_000:,}만 · 월세 {row["rent"] // 10_000}만'
+    st.markdown(f'<div class="sh-muted">{row["kind"]} · 보증금 {row["deposit"] // 10_000:,}만 · 월세 {row["rent"] // 10_000}만'
                 f' · 관리비 {row["maint"] // 10_000}만 · {html.escape(row["address"])}</div>',
                 unsafe_allow_html=True)
     ov = res["overall"]
     _, color, bg = TONE[ov["level"]]
-    summary = []
-    if flags[cc.RISK]:
-        summary.append(f"위험 {flags[cc.RISK]}곳")
-    if flags[cc.CAUTION]:
-        summary.append(f"주의 {flags[cc.CAUTION]}곳")
-    if flags[cc.UNKNOWN]:
-        summary.append(f"확인 필요 {flags[cc.UNKNOWN]}곳")
+    summary = [f"{lbl} {flags[k]}곳" for k, lbl in ((cc.RISK, "위험"), (cc.CAUTION, "주의"), (cc.UNKNOWN, "확인 필요"))
+               if flags[k]]
     st.markdown(f'<div class="sh-verdict" style="background:{bg};border-left:4px solid {color}">'
-                f'{html.escape(ov["label"])}'
-                f'{" · " + " · ".join(summary) if summary else ""}</div>', unsafe_allow_html=True)
+                f'{html.escape(ov["label"])}{" · " + " · ".join(summary) if summary else ""}'
+                f'<div class="sh-muted" style="font-weight:400;margin-top:4px">계약서 문구만 본 결과예요. '
+                f'아래 서류·현장 {len(todo)}개는 아직 미확인이라, 이 결과가 계약 전체의 안전을 보장하지 않아요.</div></div>',
+                unsafe_allow_html=True)
 
-    d1, d2 = st.columns(2)
-    with d1:
-        st.markdown("**계약서**")
-        st.markdown(doc_html(contract_text, hl["marks"]["contract"], note_status), unsafe_allow_html=True)
-    with d2:
-        st.markdown("**등기부 요약**")
-        st.markdown(doc_html(registry_text, hl["marks"]["registry"], note_status), unsafe_allow_html=True)
+    tab_contract, tab_check = st.tabs(["계약서 분석", f"직접 확인할 것 ({len(todo)}개 미확인)"])
 
-    st.markdown("#### 표시된 부분")
-    if not hl["notes"]:
-        st.markdown("계약서와 등기에서 위험·주의로 표시할 부분이 없어요. 계약 당일 최신 등기부등본은 한 번 더 확인하세요.")
-    for n in hl["notes"]:
-        label, color, bg = TONE[n["status"]]
-        with st.container(border=True):
-            st.markdown(f'<span class="sh-no" style="background:{color};margin-left:0">{n["no"]}</span> '
-                        f'{badge(n["status"])}<b>{html.escape(n["title"])}</b>', unsafe_allow_html=True)
-            st.markdown(html.escape(n["detail"]))
-            if n["question"]:
-                st.markdown(f'<div class="sh-muted">물어볼 것: {html.escape(n["question"])}</div>',
-                            unsafe_allow_html=True)
+    with tab_contract:
+        d1, d2 = st.columns([1, 1])
+        with d1:
+            st.markdown("**가상 계약서**")
+            st.markdown(doc_html(contract_text, hl["marks"], note_status), unsafe_allow_html=True)
+        with d2:
+            specials = res["items_by_key"]["special"].get("specials", [])
+            st.markdown("**표시된 부분**")
+            if specials:
+                done = ai_state is not None
+                st.button("AI로 특약 설명 듣기" if not done else "AI 설명을 받았어요", key=f"aibtn_{ai_key}",
+                          disabled=done or st.session_state.ai_calls >= ai_parse.SESSION_LIMIT,
+                          on_click=explain_specials, args=(ai_key, [s["sentence"] for s in specials]))
+                if ai_state and ai_state.get("message"):
+                    st.caption(ai_state["message"])
+                elif not ai_state:
+                    st.caption("Gemini가 특약을 쉬운 말로 풀어 주고 물어볼 질문을 만들어요. 판정은 바꾸지 않아요.")
+            if not hl["notes"]:
+                st.markdown("계약서에서 위험·주의·확인 필요로 표시할 문구가 없어요. 오른쪽 탭의 서류·현장은 따로 확인하세요.")
+            for n in hl["notes"]:
+                label, color, bg = TONE[n["status"]]
+                with st.container(border=True):
+                    st.markdown(f'<span class="sh-no" style="background:{color};margin-left:0">{n["no"]}</span> '
+                                f'{badge(n["status"])}<b>{html.escape(n["title"])}</b>', unsafe_allow_html=True)
+                    if n.get("sentence"):
+                        st.markdown(f'<div class="sh-muted">원문: “{html.escape(n["sentence"])}”</div>',
+                                    unsafe_allow_html=True)
+                    st.markdown(html.escape(n["detail"]))
+                    ai = n.get("ai")
+                    if ai and n["by"] != "AI":
+                        quote = f' (“{html.escape(ai["quote"])}”)' if ai["quote"] else ""
+                        st.markdown(f'<div style="margin-top:4px"><b>AI 설명</b>{quote}: {html.escape(ai["explain"])}</div>',
+                                    unsafe_allow_html=True)
+                    if n["question"]:
+                        st.markdown(f'<div class="sh-muted">물어볼 것: {html.escape(n["question"])}</div>',
+                                    unsafe_allow_html=True)
+                    if ai and ai["question"] and ai["question"] != n["question"]:
+                        st.markdown(f'<div class="sh-muted">AI가 제안한 질문: {html.escape(ai["question"])}</div>',
+                                    unsafe_allow_html=True)
+                    st.markdown(links(n["sources"]), unsafe_allow_html=True)
+            ok_specials = [s for s in specials if s["status"] == cc.OK]
+            if ok_specials:
+                with st.expander(f"문제로 표시하지 않은 특약 {len(ok_specials)}개"):
+                    for s in ok_specials:
+                        extra = f" · AI: {s['ai']['explain']}" if s.get("ai") else ""
+                        st.markdown(f"- “{s['sentence']}” — {s['type']}. {s['why']}{extra}")
+            st.caption("AI 설명은 참고용이에요. 판정은 규칙으로 하고, AI는 '정상'을 '확인 필요'로 올리기만 할 수 있어요. "
+                       "법률 자문이 아니에요.")
 
-    unknown = [i for i in res["items"] if i["status"] == cc.UNKNOWN]
-    ok = [i["name"] for i in res["items"] if i["status"] == cc.OK]
-    if unknown:
-        st.markdown("#### 문서에 없어서 확인이 필요한 것")
-        for i in unknown:
-            st.markdown(f"- **{i['name']}** · {i['detail']}")
-    if ok:
-        st.markdown(f'<div class="sh-muted" style="margin-top:8px">문제없는 항목: {html.escape(", ".join(ok))}</div>',
-                    unsafe_allow_html=True)
+    with tab_check:
+        st.caption("계약서로는 알 수 없는 것들이에요. 직접 확인하기 전까지는 미확인으로 남아요. "
+                   "확인했으면 체크해 두세요(이 화면에서만 기억해요).")
+        for ck in res["checklist"]:
+            checked = st.session_state.get(f"ck_{lid}_{ck['key']}", False)
+            status = cc.SELF_CHECKED if checked else cc.UNCHECKED
+            head = f"{'✓ ' if checked else ''}{ck['title']} · {status}" + (" · 꼭 확인" if ck["important"] and not checked else "")
+            with st.expander(head, expanded=ck["important"] and not checked):
+                st.markdown(ck["why"])
+                if ck["hint"]:
+                    st.markdown(f'<div class="sh-muted">계약서에서 본 것: {html.escape(ck["hint"])}</div>',
+                                unsafe_allow_html=True)
+                st.markdown("\n".join(f"- {h}" for h in ck["how"]))
+                st.markdown(f'<div class="sh-muted">어디서: {html.escape(ck["where"])}</div>', unsafe_allow_html=True)
+                if ck["key"] == "prior":
+                    c = res["contract"]
+                    st.markdown("**보증금 비율 계산 (참고)**")
+                    k1, k2, k3 = st.columns(3)
+                    with k1:
+                        mort = st.number_input("등기부 근저당 채권최고액 (만 원)", min_value=0, step=100,
+                                               value=None, key=f"mort_{lid}")
+                    with k2:
+                        prior = st.number_input("선순위 보증금 (만 원)", min_value=0, step=100,
+                                                value=(c["prior"] // 10_000) if c["prior"] is not None else None,
+                                                key=f"prior_{lid}")
+                    with k3:
+                        value = st.number_input("건물 시세 (만 원)", min_value=0, step=1000,
+                                                value=(c["value"] // 10_000) if c["value"] else None,
+                                                key=f"value_{lid}")
+                    r = cc.deposit_ratio(None if mort is None else mort * 10_000,
+                                         None if prior is None else prior * 10_000,
+                                         c["deposit"], None if value is None else value * 10_000)
+                    if r:
+                        pct = f"{r['ratio']:.0%}"
+                        st.markdown(f'{badge(r["level"], pct)} (근저당 + 선순위 + 내 보증금) ÷ 시세. '
+                                    f'팀 기준 70% 이상 주의, 80% 이상 위험 (공식 기준 아님)', unsafe_allow_html=True)
+                    else:
+                        st.caption("등기부에서 근저당 금액을 확인해 넣으면 계산돼요. 숫자를 모르면 칸을 비워 두세요.")
+                st.markdown(links(ck["sources"]), unsafe_allow_html=True)
+                st.markdown(links(ck["cases"], "실제 사례 (참고용, 사기 판단 근거 아님)"), unsafe_allow_html=True)
+                st.checkbox("직접 확인했어요", key=f"ck_{lid}_{ck['key']}")
 
     st.markdown("#### 집주인·중개사에게 보낼 문자")
-    st.text_area("문자 초안", cc.message_draft(row["name"], res["questions"]), height=200,
-                 key=f"msg_{lid}_{hash(contract_text + registry_text)}", label_visibility="collapsed")
+    st.text_area("문자 초안", cc.message_draft(row["name"], res["questions"]), height=220,
+                 key=f"msg_{lid}_{hash(contract_text)}_{bool(ai_state)}", label_visibility="collapsed")
 
-    with st.expander("계약서·등기 내용 직접 고치기"):
+    with st.expander("계약서 내용 직접 고치기"):
         st.caption("내용을 고치면 위의 표시가 바로 다시 계산돼요. 실제 계약서·개인정보는 넣지 마세요.")
-        e1, e2 = st.columns(2)
-        with e1:
-            st.text_area("계약서", contracts[lid], height=360, key=f"ct_{lid}")
-        with e2:
-            st.text_area("등기부 요약", registries[lid], height=360, key=f"rg_{lid}")
+        st.text_area("계약서", contracts[lid], height=360, key=f"ct_{lid}")

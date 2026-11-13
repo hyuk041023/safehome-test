@@ -24,19 +24,26 @@
 2. Vercel 프로젝트 → **Settings → Environment Variables** → `GEMINI_API_KEY` 추가 (Production·Preview 체크)
 3. **Deployments**에서 최신 배포를 **Redeploy** (환경 변수는 다시 배포해야 반영돼요)
 
-### 호출 횟수 제한
+### 호출 횟수 제한 (Gemini 무료 한도에 맞춤)
 
-| 위치 | 기본값 | 바꾸는 법 |
-| --- | --- | --- |
-| 입력 길이 | 200자 | `api/parse.js`의 `MAX_CHARS` |
-| 한 사용자(IP) 분당 | 5번 | 환경 변수 `LIMIT_PER_MINUTE` |
-| 한 사용자(IP) 하루 | 30번 | 환경 변수 `LIMIT_PER_DAY_IP` |
-| 서비스 전체 하루 | 200번 | 환경 변수 `LIMIT_PER_DAY_TOTAL` |
-| 화면 한 번 접속당 | 10번 | `ai_parse.py`의 `SESSION_LIMIT` |
+Gemini 무료 한도(11/12 AI Studio 확인): **RPM 15 · TPM 25만 · RPD 500**. 서비스 전체 제한을 이보다 조금 낮게 잡아서 Google 한도에 닿기 전에 먼저 멈춰요. 멈추면 화면은 규칙 해석으로 대신 찾아요.
 
+| 제한 | 기본값 | Google 한도 | 바꾸는 법 (Vercel 환경 변수) |
+| --- | --- | --- | --- |
+| 서비스 전체 분당 호출 | 12번 | RPM 15 | `LIMIT_GLOBAL_PER_MINUTE` |
+| 서비스 전체 분당 토큰 | 20만 | TPM 25만 | `LIMIT_TOKENS_PER_MINUTE` |
+| 서비스 전체 하루 호출 | 450번 | RPD 500 | `LIMIT_PER_DAY_TOTAL` |
+| 한 번 답의 최대 토큰 | 256 | — | `MAX_OUTPUT_TOKENS` |
+| 한 사용자(IP) 분당 | 3번 | — | `LIMIT_PER_MINUTE` |
+| 한 사용자(IP) 하루 | 30번 | — | `LIMIT_PER_DAY_IP` |
+| 입력 길이 | 200자 | — | `api/parse.js`의 `MAX_CHARS` |
+| 화면 한 번 접속당 | 10번 | — | `ai_parse.py`의 `SESSION_LIMIT` |
+
+- 토큰은 Gemini 응답의 `usageMetadata.totalTokenCount`(실제 사용량)로 세요. 부르기 전에는 프롬프트+문장 길이로 어림해서 미리 막아요. 한 번 검색은 약 800~1,000토큰이에요.
+- Google이 429(한도 초과)를 주면 **1분 동안 Gemini 호출을 멈춰요**. 그동안은 규칙 해석으로 찾아요.
+- 지금 사용량은 `GET /api/parse`로 볼 수 있어요 (오늘 호출 수, 최근 1분 호출·토큰, 쉬는 시간).
 - 모델은 `gemini-3.5-flash-lite`예요 (`gemini-2.5-flash`는 새 계정에서 404). 바꾸려면 환경 변수 `GEMINI_MODEL`.
-- 무료 등급 한도(11/12 AI Studio 확인): **RPM 15 · TPM 25만 · RPD 500**. 전체 하루 200번이 RPD보다 작아서 그대로 둬요. 한도가 바뀌면 AI Studio → **Dashboard → Rate Limit**에서 다시 확인하고 `LIMIT_PER_DAY_TOTAL`을 **RPD보다 작게** 잡아 주세요.
-- 동시에 여러 명이 누르면 분당 15번(RPM)에 먼저 걸릴 수 있어요. 그때는 Gemini가 429를 주고 화면은 규칙 해석으로 대신해요.
+- 한도가 바뀌면(유료 전환 등) AI Studio → **Dashboard → Rate Limit**에서 확인하고, 위 환경 변수를 한도보다 조금 낮게 넣은 뒤 Redeploy 해 주세요.
 - 서버 쪽 제한은 함수 메모리에 저장하는 최소한의 방어예요. Vercel이 함수를 새로 띄우면 숫자가 초기화될 수 있어요. 마지막 안전장치는 Google 할당량이고, 넘으면 규칙 해석으로 대신해요.
 
 ## 실거래 시세 갱신
@@ -129,5 +136,5 @@ python db_seed.py           # DB를 처음부터 다시 만들 때
 - [ ] 연립다세대(빌라) 전월세도 추가할지 검토
 - [x] 문장 해석에 Gemini 연결 (11/12, `/api/parse` 서버리스 함수)
 - [x] Vercel에 `GEMINI_API_KEY` 등록 후 Redeploy (11/12)
-- [x] AI Studio에서 RPM·RPD·TPM 확인 (RPD 500 → 전체 하루 200 유지)
+- [x] AI Studio에서 RPM·RPD·TPM 확인 → 서비스 전체 분당 12번 · 분당 20만 토큰 · 하루 450번으로 맞춤
 - [ ] 발표·영상에 "샘플 데이터" 표시
